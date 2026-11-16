@@ -71,3 +71,43 @@ ps aux --sort=-%mem | head
 echo
 echo "TOP CPU CONSUMERS"
 ps aux --sort=-%cpu | head
+
+########################################################
+# DOCKER
+########################################################
+
+if command -v docker >/dev/null 2>&1
+then
+
+echo
+echo "DOCKER CONTAINERS"
+
+docker ps -a
+
+echo
+echo "DOCKER IMAGE SIZE"
+
+docker images --format '{{.Repository}} {{.Tag}} {{.Size}}'
+
+echo
+echo "RUNNING CONTAINER RESOURCE USAGE"
+
+timeout 10 docker stats --no-stream
+
+echo
+echo "UNUSED IMAGES"
+
+docker images -f dangling=true
+
+echo
+echo "UNUSED VOLUMES"
+
+docker volume ls -f dangling=true
+
+echo
+echo "PORT BINDINGS"
+
+docker ps --format \
+'{{.Names}} -> {{.Ports}}'
+
+fi
