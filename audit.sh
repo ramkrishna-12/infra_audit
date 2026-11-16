@@ -35,3 +35,39 @@ do
         -i "$PEM" ec2-user@"$HOST" 'bash -s' <<'REMOTE'
 
 HOSTNAME=$(hostname)
+
+REPORT="/tmp/${HOSTNAME}_report.txt"
+
+{
+echo "===================================================="
+echo "HOST: $HOSTNAME"
+echo "DATE: $(date)"
+echo "===================================================="
+
+########################################################
+# CPU RAM DISK
+########################################################
+
+echo
+echo "CPU"
+lscpu
+
+echo
+echo "CPU LOAD"
+uptime
+
+echo
+echo "MEMORY"
+free -h
+
+echo
+echo "DISK"
+df -h
+
+echo
+echo "TOP MEMORY CONSUMERS"
+ps aux --sort=-%mem | head
+
+echo
+echo "TOP CPU CONSUMERS"
+ps aux --sort=-%cpu | head
