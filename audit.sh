@@ -243,3 +243,48 @@ do
 done
 
 fi
+
+########################################################
+# LICENSE
+########################################################
+
+echo
+echo "INSTALLED LICENSE FILES"
+
+find /opt /etc /usr/local \
+-type f \
+\( -iname "*license*" -o -iname "*.lic" \) \
+2>/dev/null
+
+########################################################
+# RISK SECTION
+########################################################
+
+echo
+echo "POTENTIALLY SAFE CLEANUP ITEMS"
+
+echo "- Dangling Docker images"
+docker images -f dangling=true 2>/dev/null || true
+
+echo "- Dangling Volumes"
+docker volume ls -f dangling=true 2>/dev/null || true
+
+echo "- Journal Usage"
+journalctl --disk-usage 2>/dev/null || true
+
+} > "$REPORT"
+
+echo "$REPORT generated"
+
+REMOTE
+
+    scp -i "$PEM" \
+        -o StrictHostKeyChecking=no \
+        ec2-user@"$HOST":/tmp/*_report.txt \
+        "$REPORT_DIR"/
+
+done < "$HOSTS_FILE"
+
+echo
+echo "Audit complete."
+echo "Reports stored in: $REPORT_DIR"
