@@ -145,3 +145,31 @@ do
 done
 
 fi
+
+########################################################
+# PORTS
+########################################################
+
+echo
+echo "OPEN PORTS"
+
+ss -tulpn
+
+########################################################
+# NETWORK
+########################################################
+
+echo
+echo "ESTABLISHED CONNECTIONS"
+
+ss -tpn state established
+
+echo
+echo "LISTENING SOCKETS"
+
+ss -lntup
+
+echo
+echo "CONNECTION SUMMARY"
+
+netstat -s 2>/dev/null || true
