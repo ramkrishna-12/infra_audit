@@ -173,3 +173,49 @@ echo
 echo "CONNECTION SUMMARY"
 
 netstat -s 2>/dev/null || true
+
+
+########################################################
+# SSH LOGINS
+########################################################
+
+echo
+echo "CURRENT USERS"
+
+who
+
+echo
+echo "LOGIN HISTORY"
+
+last -a | head -100
+
+echo
+echo "UNIQUE IPS"
+
+last -i | awk "{print \$3}" | sort -u
+
+########################################################
+# USER ACCESS
+########################################################
+
+echo
+echo "ACTIVE SSH SESSIONS"
+
+w
+
+########################################################
+# FAILED CONNECTIONS
+########################################################
+
+echo
+echo "FAILED SSH LOGINS"
+
+grep "Failed password" /var/log/secure 2>/dev/null | tail -50 || true
+
+grep "Failed password" /var/log/auth.log 2>/dev/null | tail -50 || true
+
+echo
+echo "DROPPED CONNECTIONS"
+
+dmesg | grep -iE \
+"reset|timeout|disconnect|network" | tail -50
