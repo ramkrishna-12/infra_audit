@@ -219,3 +219,27 @@ echo "DROPPED CONNECTIONS"
 
 dmesg | grep -iE \
 "reset|timeout|disconnect|network" | tail -50
+
+
+########################################################
+# IMAGE UPDATE CHECK
+########################################################
+
+if command -v docker >/dev/null 2>&1
+then
+
+echo
+echo "IMAGE UPDATE CHECK"
+
+docker images --format "{{.Repository}}:{{.Tag}}" |
+while read IMAGE
+do
+    echo "Checking $IMAGE"
+
+    docker pull "$IMAGE" >/tmp/pull.out 2>&1 || true
+
+    cat /tmp/pull.out | grep -i \
+    "Image is up to date" || true
+done
+
+fi
