@@ -111,3 +111,37 @@ docker ps --format \
 '{{.Names}} -> {{.Ports}}'
 
 fi
+
+########################################################
+# KUBERNETES
+########################################################
+
+if command -v kubectl >/dev/null 2>&1
+then
+
+echo
+echo "K8S PODS"
+
+kubectl get pods -A -o wide
+
+echo
+echo "K8S TOP PODS"
+
+kubectl top pod -A 2>/dev/null || true
+
+echo
+echo "K8S TOP NODES"
+
+kubectl top nodes 2>/dev/null || true
+
+echo
+echo "RECENT ERROR LOGS"
+
+for p in $(kubectl get pods -A \
+--no-headers | awk '{print $2}' | head -20)
+do
+    kubectl logs "$p" --tail=50 2>/dev/null | \
+    grep -iE "error|fatal|panic|oom" || true
+done
+
+fi
