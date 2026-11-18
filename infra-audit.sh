@@ -74,3 +74,32 @@ USAGE_EOF
 }
 
 cleanup() { [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ] && rm -rf "$TMP_DIR"; }
+
+
+# --------------------------------------------------------------------------
+#  SSH helpers
+# --------------------------------------------------------------------------
+rssh() { ssh "${SSH_OPTS[@]}" -i "$CUR_KEY" -p "$SSH_PORT" "${CUR_USER}@${CUR_HOST}" "$@"; }
+
+# prints exactly one of:  OK | AUTH | FATAL:<message>
+try_login() {   # $1=user $2=key $3=host
+  local out attempt=1 errf="$TMP_DIR/ssh_err.txt" err
+  while [ "$attempt" -le 3 ]; do
+    : > "$errf"
+    out="$(ssh "${SSH_OPTS[@]}" -i "$2" -p "$SSH_PORT" "$1@$3" 'echo AUDIT_OK' 2>"$errf" </dev/null)"
+    if [ "$out" = "AUDIT_OK" ]; then echo OK; return 0; fi
+    err="$(tr '\r\n' '  ' < "$errf")"
+    case "$err" in
+      *"HOST IDENTIFICATION HAS CHANGED"*|*"Host key verification failed"*)
+        echo "FATAL:Host key for $3 changed or could not be verified. NOT overriding (possible MITM). Fix ~/.ssh/known_hosts yourself if the server was rebuilt."; return 0 ;;
+      *"Permission denied"*|*"UNPROTECTED PRIVATE KEY"*|*"invalid format"*|*"Load key"*|*"no mutual signature"*|*"No supported authentication"*)
+        echo AUTH; return 0 ;;
+      *"timed out"*|*"refused"*|*"No route"*|*"Could not resolve"*|*"unreachable"*|*"reset by peer"*|*"closed by remote"*|*"banner exchange"*|*"Connection closed"*)
+        if [ "$attempt" -ge 3 ]; then echo "FATAL:Cannot reach $3:$SSH_PORT after 3 tries (${err:-no detail}). Check IP, security group / firewall, and that the instance is running."; return 0; fi
+        sleep $((attempt * 3)) ;;
+      *) echo AUTH; return 0 ;;
+    esac
+    attempt=$((attempt + 1))
+  done
+  echo "FATAL:unexpected SSH failure for $3"
+}
