@@ -26,3 +26,51 @@
 #  Windows: use Git Bash (Git for Windows) or WSL. If you edited this file on
 #           Windows and get odd errors, fix line endings:  sed -i 's/\r$//' infra_audit.sh
 # =============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+TS="$(date +%Y%m%d_%H%M%S)"
+OUT_ROOT="$SCRIPT_DIR/audit_reports"
+SSH_PORT=22
+SSH_USER=""
+KEY_ARG=""
+APPLY=0
+FAIL_ON=""
+LOCAL_MODE=0
+HOSTS=()
+KEY_COPIES=()
+TMP_DIR=""
+CUR_HOST=""; CUR_USER=""; CUR_KEY=""
+DEFAULT_USERS="ec2-user ubuntu admin centos debian fedora bitnami root"
+SSH_OPTS=(-o BatchMode=yes -o IdentitiesOnly=yes -o PreferredAuthentications=publickey
+          -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10
+          -o ServerAliveInterval=15 -o ServerAliveCountMax=6 -o LogLevel=ERROR)
+
+log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*"; }
+warn() { printf '[%s] WARN: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
+die()  { printf '[%s] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; exit 1; }
+
+usage() {
+cat <<'USAGE_EOF'
+infra_audit.sh - audit an existing server over SSH using the .pem key in this folder
+
+USAGE
+  ./infra_audit.sh <host | user@host> [more hosts...] [options]
+
+OPTIONS
+  -u, --user USER   SSH user. If omitted, tries: ec2-user ubuntu admin centos debian fedora bitnami root
+  -k, --key FILE    Key to use. If omitted, every *.pem next to this script is tried
+  -p, --port N      SSH port (default 22)
+  -o, --out DIR     Report folder (default: ./audit_reports)
+      --apply       Step 7: after pulling a newer image ALSO replace the running container
+                    (old container + old image are kept; auto-rollback if unhealthy).
+                    Without this flag, step 7 only pulls and preserves.
+      --fail-on LVL Exit with code 3 if the summary has findings at LVL or above
+                    (crit | warn). For CI pipelines. Reports are still saved.
+      --local       Run the checks on THIS Linux machine instead of over SSH
+  -h, --help        This help
+
+ENV: AUDIT_HOST=<host> can be used instead of a positional host.
+USAGE_EOF
+}
+
+cleanup() { [ -n "$TMP_DIR" ] && [ -d "$TMP_DIR" ] && rm -rf "$TMP_DIR"; }
