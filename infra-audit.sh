@@ -131,3 +131,76 @@ prepare_keys() {
   [ "${#KEY_COPIES[@]}" -gt 0 ] || die "No usable private key found."
   log "Keys to try: ${#KEY_COPIES[@]}"
 }
+
+# --------------------------------------------------------------------------
+#  Audit one host
+# --------------------------------------------------------------------------
+audit_host() {
+  local target="$1" host user list u k res rdir ldir rc fetch_rc tar_rc applyflag pst
+  user="$SSH_USER"
+  case "$target" in
+    *@*) user="${target%%@*}"; host="${target#*@}" ;;
+    *)   host="$target" ;;
+  esac
+  [ -n "$host" ] || { warn "Empty host in '$target'"; return 1; }
+  if [ -n "$user" ]; then list="$user"; else list="$DEFAULT_USERS"; fi
+
+  CUR_HOST="$host"; CUR_USER=""; CUR_KEY=""
+  log "================ $host ================"
+  log "[login] trying key(s) x user(s) ..."
+  for u in $list; do
+    for k in "${KEY_COPIES[@]}"; do
+      res="$(try_login "$u" "$k" "$host")"
+      case "$res" in
+        OK)      CUR_USER="$u"; CUR_KEY="$k"; break 2 ;;
+        FATAL:*) warn "${res#FATAL:}"; return 1 ;;
+        *)       : ;;
+      esac
+    done
+  done
+  if [ -z "$CUR_USER" ]; then
+    warn "No working user/key combination for $host (tried users: $list). Use -u USER / -k KEY."
+    warn "Last ssh error: $(tr '\r\n' '  ' < "$TMP_DIR/ssh_err.txt" 2>/dev/null | cut -c1-300)"
+    case "$(cat "$TMP_DIR/ssh_err.txt" 2>/dev/null)" in
+      *UNPROTECTED*|*"bad permissions"*) warn "The key file permissions are too open. On Windows run this from WSL (inside your Linux home, not /mnt/c) or Git Bash." ;;
+    esac
+    return 1
+  fi
+  log "[login] OK as '$CUR_USER'"
+
+  rdir="/tmp/infra_audit_${TS}_$$"
+  ldir="$OUT_ROOT/${host}_${TS}"
+  mkdir -p "$ldir" || { warn "Cannot create $ldir"; return 1; }
+
+  emit_remote_script > "$TMP_DIR/audit_remote.sh" || { warn "Cannot build remote payload"; return 1; }
+  log "[upload] sending audit payload ..."
+  if ! rssh "mkdir -p '$rdir/report' && cat > '$rdir/audit.sh' && chmod 700 '$rdir/audit.sh'" < "$TMP_DIR/audit_remote.sh"; then
+    warn "Upload failed (is /tmp writable on the server?)"; return 1
+  fi
+
+  applyflag=""; [ "$APPLY" = 1 ] && applyflag="--apply"
+  log "[run] executing on server (this can take a few minutes) ..."
+  rssh "bash '$rdir/audit.sh' --out '$rdir/report' $applyflag" </dev/null 2>&1 | tee "$ldir/run.log"
+  rc="${PIPESTATUS[0]}"
+  [ "${rc:-1}" -ne 0 ] && warn "Remote audit exited with code $rc (partial results are still fetched)."
+
+  log "[fetch] downloading reports ..."
+  rssh "tar -C '$rdir/report' -cf - ." </dev/null | tar -xf - -C "$ldir"
+  pst=("${PIPESTATUS[@]}"); fetch_rc="${pst[0]}"; tar_rc="${pst[1]}"
+  if [ "$fetch_rc" -ne 0 ] || [ "$tar_rc" -ne 0 ] || [ ! -s "$ldir/00_summary.txt" ]; then
+    warn "Fetch incomplete. Reports remain on the server in $rdir/report (copy with scp -i KEY -r)."
+    return 1
+  fi
+  rssh "rm -rf '$rdir'" </dev/null || warn "Could not remove $rdir on the server (harmless; it is under /tmp)."
+
+  log "DONE. Reports in: $ldir"
+  echo
+  sed -n '1,70p' "$ldir/00_summary.txt"
+  if [ -n "$FAIL_ON" ]; then
+    local pat='^\[CRIT\]'; [ "$FAIL_ON" = "warn" ] && pat='^\[(CRIT|WARN)\]'
+    if grep -Eq "$pat" "$ldir/00_summary.txt"; then
+      warn "$host: findings at '$FAIL_ON' level or above (--fail-on)."; return 3
+    fi
+  fi
+  return 0
+}
