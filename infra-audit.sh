@@ -103,3 +103,31 @@ try_login() {   # $1=user $2=key $3=host
   done
   echo "FATAL:unexpected SSH failure for $3"
 }
+
+prepare_keys() {
+  local k i=0 dst
+  local cands=()
+  if [ -n "$KEY_ARG" ]; then
+    [ -f "$KEY_ARG" ] || die "Key file not found: $KEY_ARG"
+    cands+=("$KEY_ARG")
+  else
+    shopt -s nullglob nocaseglob
+    for k in "$SCRIPT_DIR"/*.pem; do [ -f "$k" ] && cands+=("$k"); done
+    shopt -u nullglob nocaseglob
+  fi
+  [ "${#cands[@]}" -gt 0 ] || die "No .pem file found in $SCRIPT_DIR (put your key next to this script or use -k FILE)."
+  for k in "${cands[@]}"; do
+    if ! grep -q 'PRIVATE KEY' "$k" 2>/dev/null; then warn "Skipping '$k': does not look like a private key."; continue; fi
+    grep -q 'ENCRYPTED' "$k" 2>/dev/null && warn "'$k' is passphrase-protected; BatchMode cannot prompt. Load it first with: ssh-add '$k'"
+    i=$((i + 1)); dst="$TMP_DIR/key$i.pem"
+    tr -d '\r' < "$k" > "$dst" || die "Cannot copy key $k"      # strips Windows CRLF
+    chmod 600 "$dst" 2>/dev/null
+    case "$(ls -ld "$dst" 2>/dev/null | cut -c1-10)" in
+      "-rw-------") : ;;
+      *) warn "Could not restrict key permissions on this filesystem; ssh may refuse the key. On Windows run from Git Bash or from WSL (not /mnt/c)." ;;
+    esac
+    KEY_COPIES+=("$dst")
+  done
+  [ "${#KEY_COPIES[@]}" -gt 0 ] || die "No usable private key found."
+  log "Keys to try: ${#KEY_COPIES[@]}"
+}
