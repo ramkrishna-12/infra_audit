@@ -204,3 +204,59 @@ audit_host() {
   fi
   return 0
 }
+
+# --------------------------------------------------------------------------
+#  main
+# --------------------------------------------------------------------------
+main() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      -H|--host)  [ $# -ge 2 ] || die "$1 needs a value"; HOSTS+=("$2"); shift 2 ;;
+      -u|--user)  [ $# -ge 2 ] || die "$1 needs a value"; SSH_USER="$2"; shift 2 ;;
+      -k|--key)   [ $# -ge 2 ] || die "$1 needs a value"; KEY_ARG="$2"; shift 2 ;;
+      -p|--port)  [ $# -ge 2 ] || die "$1 needs a value"; SSH_PORT="$2"; shift 2 ;;
+      -o|--out)   [ $# -ge 2 ] || die "$1 needs a value"; OUT_ROOT="$2"; shift 2 ;;
+      --apply)    APPLY=1; shift ;;
+      --fail-on)  [ $# -ge 2 ] || die "$1 needs a value"; FAIL_ON="$2"; shift 2
+                  case "$FAIL_ON" in crit|warn) : ;; *) die "--fail-on must be 'crit' or 'warn'" ;; esac ;;
+      --local)    LOCAL_MODE=1; shift ;;
+      -h|--help)  usage; exit 0 ;;
+      -*)         die "Unknown option: $1 (try --help)" ;;
+      *)          HOSTS+=("$1"); shift ;;
+    esac
+  done
+  case "$SSH_PORT" in ''|*[!0-9]*) die "Port must be a number" ;; esac
+  mkdir -p "$OUT_ROOT" || die "Cannot create $OUT_ROOT"
+
+  TMP_DIR="$(mktemp -d "${HOME:-/tmp}/.infra_audit.XXXXXX")" || die "Cannot create temp dir"
+  trap cleanup EXIT
+  trap 'exit 130' INT TERM
+
+  if [ "$LOCAL_MODE" = 1 ]; then
+    [ "$(uname -s)" = "Linux" ] || die "--local needs a Linux machine (the checks use /proc, ss, ip)."
+    emit_remote_script > "$TMP_DIR/audit_remote.sh"
+    local lo="$OUT_ROOT/local_${TS}" extra=""; [ "$APPLY" = 1 ] && extra="--apply"
+    mkdir -p "$lo"
+    bash "$TMP_DIR/audit_remote.sh" --out "$lo" $extra
+    local lrc=$?
+    echo; echo "Reports: $lo"; exit "$lrc"
+  fi
+
+  [ -z "${AUDIT_HOST:-}" ] || [ "${#HOSTS[@]}" -gt 0 ] || HOSTS+=("$AUDIT_HOST")
+  [ "${#HOSTS[@]}" -gt 0 ] || { usage; die "No host given."; }
+  command -v ssh >/dev/null 2>&1 || die "OpenSSH client not found. Windows: install Git for Windows (Git Bash) or use WSL. Mac/Linux: install openssh-client."
+  command -v tar >/dev/null 2>&1 || die "tar not found."
+
+  prepare_keys
+
+  local h rc ok=0 bad=0 gated=0
+  for h in "${HOSTS[@]}"; do
+    audit_host "$h"; rc=$?
+    case "$rc" in 0) ok=$((ok + 1)) ;; 3) gated=$((gated + 1)) ;; *) bad=$((bad + 1)) ;; esac
+  done
+  echo
+  log "Finished: $ok clean, $gated with findings above --fail-on, $bad could not be audited."
+  [ "$bad" -gt 0 ] && exit 1
+  [ "$gated" -gt 0 ] && exit 3
+  exit 0
+}
