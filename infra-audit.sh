@@ -486,3 +486,13 @@ docker_report() {
     fi
     printf '%s|%s|%s|%s\n' "$size" "${iid#sha256:}" "${tags:-<none>}" "$verdict" | sed 's/|\(.\{12\}\)[0-9a-f]*|/|\1|/' >> "$rows"
   done
+  if [ -s "$rows" ]; then
+    sort -t'|' -k1,1nr "$rows" | awk -F'|' 'function h(b,  i,u){split("B KB MB GB TB",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}return sprintf("%.1f%s",b,u[i])}
+      {printf "%9s  %s  %s\n           => %s\n", h($1), $2, $3, $4}'
+    local rec; rec="$(awk -F'|' '$4 ~ /^SAFE - unused AND dangling/ {s+=$1} END{printf "%d", s+0}' "$rows")"
+    echo; echo "Reclaimable by deleting only the 'SAFE' dangling images: $(hs "$rec")  (layers shared with other images may make the real figure smaller)"
+    echo "Command (review first):  docker image prune        # removes dangling images only"
+    [ "$rec" -ge 1073741824 ] && flag "INFO|Docker: $(hs "$rec") of dangling images can be safely removed (docker image prune)."
+  else
+    echo "(no images found)"
+  fi
