@@ -321,3 +321,37 @@ LI() {
   if have "$tool"; then L "$@"; else printf '\n--- %s\n[SKIPPED: "%s" is not installed on this host]\n' "$1" "$tool"; fi
   return 0
 }
+
+# --------------------------- tool detection --------------------------------
+detect_tools() {
+  DOCKER_OK=0; DOCKER_NOTE="docker is not installed"
+  if have docker; then
+    if T docker info >/dev/null 2>"$OUT/.derr"; then DOCKER_OK=1; DOCKER_NOTE=""
+    else DOCKER_NOTE="docker is installed but the daemon is not reachable: $(tr '\n' ' ' < "$OUT/.derr" | cut -c1-200)"; fi
+  fi
+
+  KC=""; KNOTE="no kubectl / k3s / microk8s with a reachable cluster found"
+  local c cfg tried=" "
+  for c in "kubectl" "k3s kubectl" "microk8s kubectl"; do
+    [ -z "$KC" ] || break
+    have "${c%% *}" || continue
+    for cfg in "${KUBECONFIG:-}" "" /etc/kubernetes/admin.conf /etc/rancher/k3s/k3s.yaml \
+               "${SUDO_USER:+/home/$SUDO_USER/.kube/config}" /root/.kube/config "${HOME:-/root}/.kube/config"; do
+      case "$tried" in *" $c|$cfg "*) continue ;; esac
+      tried="$tried$c|$cfg "
+      if [ -n "$cfg" ]; then [ -r "$cfg" ] || continue; export KUBECONFIG="$cfg"; else unset KUBECONFIG; fi
+      if T $c --request-timeout=5s get --raw=/version >/dev/null 2>&1; then
+        KC="$c --request-timeout=20s"; KNOTE="using: $c${cfg:+ (KUBECONFIG=$cfg)}"; break
+      fi
+    done
+  done
+  [ -n "$KC" ] || unset KUBECONFIG
+
+  CRI=""
+  for c in "crictl" "k3s crictl"; do
+    [ -z "$CRI" ] || break
+    have "${c%% *}" || continue
+    if T $c ps >/dev/null 2>&1; then CRI="$c"; fi
+  done
+  export DOCKER_OK KC CRI
+}
