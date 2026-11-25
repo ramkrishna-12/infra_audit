@@ -468,3 +468,21 @@ docker_report() {
     while IFS='|' read -r iid size; do SIZE[$iid]="$size"; done \
       < <(printf '%s\n' "${!TAGS[@]}" | xargs -r docker image inspect --format '{{.Id}}|{{.Size}}' 2>/dev/null)
   fi
+
+  local rows="$OUT/.img_rows" verdict tags run stop
+  : > "$rows"
+  for iid in "${!TAGS[@]}"; do
+    tags="${TAGS[$iid]}"; size="${SIZE[$iid]:-0}"; run="${RUN[$iid]:-}"; stop="${STOP[$iid]:-}"
+    if [ -n "$run" ]; then
+      verdict="IN USE by running container(s): $run -> DO NOT DELETE"
+    elif [ -n "$stop" ]; then
+      verdict="CAUTION - used by STOPPED container(s): $stop -> remove those containers first, only if no longer needed"
+    elif [ -z "$tags" ]; then
+      verdict="SAFE - unused AND dangling (no tag, no container)"
+    elif printf '%s' "$tags" | grep -q 'rollback-'; then
+      verdict="KEEP - rollback copy created by this audit; delete only after a human confirms the new version works"
+    else
+      verdict="PROBABLY SAFE - no container uses it, but it is tagged: confirm it is not a version you may roll back to"
+    fi
+    printf '%s|%s|%s|%s\n' "$size" "${iid#sha256:}" "${tags:-<none>}" "$verdict" | sed 's/|\(.\{12\}\)[0-9a-f]*|/|\1|/' >> "$rows"
+  done
