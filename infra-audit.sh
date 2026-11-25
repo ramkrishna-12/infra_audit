@@ -355,3 +355,78 @@ detect_tools() {
   done
   export DOCKER_OK KC CRI
 }
+
+# ======================= SECTION 2: instance resources =====================
+sec_resources() {
+  hdr "HOST IDENTITY"
+  echo "Report time : $(date '+%F %T %Z')"
+  echo "Hostname    : $(hostname 2>/dev/null)"
+  if [ -r /etc/os-release ]; then ( . /etc/os-release; echo "OS          : ${PRETTY_NAME:-unknown}" ); fi
+  echo "Kernel      : $(uname -r)"
+  echo "Uptime      : $(uptime -p 2>/dev/null || uptime)"
+  echo "Audited as  : $(id -un) (uid $(id -u))"
+  if [ "$(id -u)" -ne 0 ]; then
+    echo "NOTE        : not root and no passwordless sudo - some checks have limited visibility."
+    flag "WARN|Audit ran without root: logs, docker files and auth logs may be only partly visible."
+  fi
+
+  hdr "CLOUD INSTANCE (AWS metadata, if present)"
+  if have curl; then
+    local tok v p
+    tok="$(curl -s -m 2 -X PUT 'http://169.254.169.254/latest/api/token' -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' 2>/dev/null)"
+    for p in instance-id instance-type placement/availability-zone local-ipv4 public-ipv4; do
+      if [ -n "$tok" ]; then v="$(curl -s -m 2 -H "X-aws-ec2-metadata-token: $tok" "http://169.254.169.254/latest/meta-data/$p" 2>/dev/null)"
+      else v="$(curl -s -m 2 "http://169.254.169.254/latest/meta-data/$p" 2>/dev/null)"; fi
+      case "$v" in ""|*"<"*|*" "*) v="n/a (not AWS, or metadata blocked)" ;; esac
+      printf '%-22s: %s\n' "$p" "$v"
+    done
+  else
+    echo "[SKIPPED: curl not installed]"
+  fi
+
+  hdr "CPU"
+  local cores l1 l5 l15 ratio
+  cores="$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo)"; [ -n "$cores" ] || cores=1
+  echo "vCPUs: $cores"
+  LI lscpu "CPU model" "lscpu | grep -E 'Model name|Architecture|^CPU\(s\)|Thread|Core|Socket'"
+  read -r l1 l5 l15 _ < /proc/loadavg
+  ratio="$(awk -v l="$l5" -v c="$cores" 'BEGIN{printf "%.2f", l/c}')"
+  echo; echo "Load average 1/5/15 min: $l1 / $l5 / $l15   (5-min load per vCPU: $ratio)"
+  if awk -v r="$ratio" 'BEGIN{exit !(r>1.5)}'; then flag "CRIT|CPU overloaded: 5-min load is $ratio per vCPU."
+  elif awk -v r="$ratio" 'BEGIN{exit !(r>1.0)}'; then flag "WARN|CPU busy: 5-min load is $ratio per vCPU."; fi
+  LI top "CPU snapshot" "top -bn1 | head -15"
+  LI vmstat "vmstat (3 samples)" "vmstat 1 3"
+  L "Top 10 processes by CPU" "ps -eo pid,user,%cpu,%mem,rss,etime,comm --sort=-%cpu | head -11"
+
+  hdr "RAM / SWAP"
+  LI free "memory" "free -h"
+  local mt ma pct
+  mt="$(awk '/^MemTotal:/{print $2}' /proc/meminfo)"; ma="$(awk '/^MemAvailable:/{print $2}' /proc/meminfo)"
+  if [ -n "$mt" ] && [ -n "$ma" ] && [ "$mt" -gt 0 ]; then
+    pct=$(( ma * 100 / mt ))
+    echo; echo "Total RAM: $(hs $((mt*1024)))   Available: $(hs $((ma*1024))) (${pct}%)"
+    [ "$pct" -lt 10 ] && flag "CRIT|RAM almost exhausted: only ${pct}% available."
+    [ "$pct" -ge 10 ] && [ "$pct" -lt 20 ] && flag "WARN|RAM low: ${pct}% available."
+  else
+    echo "[could not read /proc/meminfo]"
+  fi
+  L "Top 10 processes by memory" "ps -eo pid,user,%mem,rss,etime,comm --sort=-%mem | head -11"
+
+  hdr "STORAGE"
+  L "Filesystems" "df -hT -x tmpfs -x devtmpfs -x squashfs -x overlay"
+  L "Inodes" "df -ih -x tmpfs -x devtmpfs -x squashfs -x overlay"
+  LI lsblk "Block devices" "lsblk -o NAME,SIZE,TYPE,FSTYPE,MOUNTPOINT"
+  local pu mp
+  while read -r pu mp; do
+    [ -n "$pu" ] || continue
+    if [ "$pu" -ge 90 ]; then flag "CRIT|Disk $mp is ${pu}% full."
+    elif [ "$pu" -ge 80 ]; then flag "WARN|Disk $mp is ${pu}% full."; fi
+  done < <(df -P -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | awk 'NR>1{gsub("%","",$5); print $5+0, $6}')
+  while read -r pu mp; do
+    [ -n "$pu" ] || continue
+    [ "$pu" -ge 85 ] && flag "WARN|Inodes on $mp are ${pu}% used."
+  done < <(df -iP -x tmpfs -x devtmpfs -x squashfs -x overlay 2>/dev/null | awk 'NR>1{gsub("%","",$5); print $5+0, $6}')
+  CMD_TIMEOUT=180 L "Biggest top-level directories (stay on one filesystem)" "du -xh --max-depth=1 / 2>/dev/null | sort -rh | head -15"
+  CMD_TIMEOUT=180 L "Biggest directories under /var" "du -xh --max-depth=2 /var 2>/dev/null | sort -rh | head -15"
+  return 0
+}
