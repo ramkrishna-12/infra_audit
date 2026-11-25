@@ -455,7 +455,7 @@ docker_report() {
       running|restarting|paused) RUN[$iid]+="${RUN[$iid]:+, }$cname($state)" ;;
       *)                         STOP[$iid]+="${STOP[$iid]:+, }$cname($state)" ;;
     esac
-    done < <(T docker ps -aq --no-trunc 2>/dev/null | xargs -r docker inspect --format '{{.Image}}|{{.Name}}|{{.State.Status}}' 2>/dev/null)
+  done < <(T docker ps -aq --no-trunc 2>/dev/null | xargs -r docker inspect --format '{{.Image}}|{{.Name}}|{{.State.Status}}' 2>/dev/null)
 
   while IFS='|' read -r iid ref; do
     [ -n "$iid" ] || continue
@@ -531,3 +531,4 @@ docker_report() {
   else
     echo "(no containers)"
   fi
+  [ -r /etc/docker/daemon.json ] && L "Docker daemon log settings" "grep -n -i 'log' /etc/docker/daemon.json || echo '(no log settings in daemon.json -> unlimited json-file logs by default)'"
