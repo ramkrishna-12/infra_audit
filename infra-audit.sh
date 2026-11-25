@@ -496,3 +496,38 @@ docker_report() {
   else
     echo "(no images found)"
   fi
+
+  hdr "DOCKER - CONTAINER LOG FILES (largest first)"
+  local lrows="$OUT/.log_rows" sz rot lverdict
+  : > "$lrows"
+  while IFS='|' read -r id cname state drv path cfg; do
+    [ -n "$id" ] || continue
+    cname="${cname#/}"; sz=-1
+    if [ "$drv" = "local" ] && [ -z "$path" ]; then path="/var/lib/docker/containers/$id/local-logs/container.log"; fi
+    case "$drv" in
+      json-file|local)
+        if [ -n "$path" ] && [ -r "$path" ]; then sz="$(stat -c %s "$path" 2>/dev/null || echo -1)"; fi ;;
+    esac
+    case "$cfg" in *max-size*) rot="yes" ;; *) rot="NO" ;; esac
+    if [ "$drv" != "json-file" ] && [ "$drv" != "local" ]; then
+      lverdict="driver '$drv': logs are NOT on local disk (see the logging backend)"
+    elif [ "$sz" -lt 0 ]; then
+      lverdict="UNKNOWN - log file unreadable (need root) or missing"
+    else
+      case "$state" in
+        running|restarting|paused)
+          lverdict="IN USE - active log of a running container: never rm the file; archive it, then 'truncate -s 0 <file>', and set max-size/max-file" ;;
+        *) lverdict="SAFE once the stopped container is removed (docker rm deletes its log)" ;;
+      esac
+      if [ "$sz" -ge $((BIG_LOG_MB * 1048576)) ]; then
+        flag "WARN|Container '$cname' log is $(hs "$sz") (rotation configured: $rot)."
+      fi
+    fi
+    printf '%s|%s|%s|%s|%s|%s|%s\n' "$sz" "$cname" "$state" "$drv" "$rot" "$lverdict" "$path" >> "$lrows"
+  done < <(T docker ps -aq --no-trunc 2>/dev/null | xargs -r docker inspect --format '{{.Id}}|{{.Name}}|{{.State.Status}}|{{.HostConfig.LogConfig.Type}}|{{.LogPath}}|{{.HostConfig.LogConfig.Config}}' 2>/dev/null)
+  if [ -s "$lrows" ]; then
+    sort -t'|' -k1,1nr "$lrows" | awk -F'|' 'function h(b,  i,u){if(b<0)return "n/a";split("B KB MB GB TB",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}return sprintf("%.1f%s",b,u[i])}
+      {printf "%9s  %-28s state=%-10s driver=%-9s rotation=%s\n           => %s\n           file: %s\n", h($1),$2,$3,$4,$5,$6,$7}'
+  else
+    echo "(no containers)"
+  fi
