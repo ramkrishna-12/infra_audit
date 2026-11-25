@@ -430,3 +430,28 @@ sec_resources() {
   CMD_TIMEOUT=180 L "Biggest directories under /var" "du -xh --max-depth=2 /var 2>/dev/null | sort -rh | head -15"
   return 0
 }
+
+# ============== SECTION 3: images / pods / logs: usage & deletability ======
+docker_report() {
+  hdr "DOCKER - DISK USAGE OVERVIEW"
+  L "docker system df" "docker system df"
+
+  hdr "DOCKER - LIVE CPU / MEMORY PER RUNNING CONTAINER (highest memory first)"
+  if [ -z "$(T docker ps -q 2>/dev/null)" ]; then
+    echo "(no running containers)"
+  else
+    echo "MEM% | CPU% | CONTAINER | MEM USAGE | NET I/O | BLOCK I/O"
+    T docker stats --no-stream --format '{{.MemPerc}}|{{.CPUPerc}}|{{.Name}}|{{.MemUsage}}|{{.NetIO}}|{{.BlockIO}}' 2>&1 | sort -t'|' -k1,1nr
+  fi
+  L "Container writable-layer sizes" "docker ps -a -s --format 'table {{.Names}}\t{{.Status}}\t{{.Size}}'"
+
+  hdr "DOCKER - IMAGES: size, who uses them, safe to delete?"
+  declare -A TAGS SIZE RUN STOP
+  local iid ref size cname state id drv path cfg
+  while IFS='|' read -r iid cname state; do
+    [ -n "$iid" ] || continue
+    cname="${cname#/}"
+    case "$state" in
+      running|restarting|paused) RUN[$iid]+="${RUN[$iid]:+, }$cname($state)" ;;
+      *)                         STOP[$iid]+="${STOP[$iid]:+, }$cname($state)" ;;
+    esac
