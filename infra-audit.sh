@@ -455,3 +455,16 @@ docker_report() {
       running|restarting|paused) RUN[$iid]+="${RUN[$iid]:+, }$cname($state)" ;;
       *)                         STOP[$iid]+="${STOP[$iid]:+, }$cname($state)" ;;
     esac
+    done < <(T docker ps -aq --no-trunc 2>/dev/null | xargs -r docker inspect --format '{{.Image}}|{{.Name}}|{{.State.Status}}' 2>/dev/null)
+
+  while IFS='|' read -r iid ref; do
+    [ -n "$iid" ] || continue
+    case "$ref" in *"<none>"*) ref="" ;; esac
+    if [ -n "$ref" ]; then TAGS[$iid]+="${TAGS[$iid]:+, }$ref"
+    elif [ -z "${TAGS[$iid]+x}" ]; then TAGS[$iid]=""; fi
+  done < <(T docker image ls -a --no-trunc --format '{{.ID}}|{{.Repository}}:{{.Tag}}' 2>/dev/null)
+
+  if [ "${#TAGS[@]}" -gt 0 ]; then
+    while IFS='|' read -r iid size; do SIZE[$iid]="$size"; done \
+      < <(printf '%s\n' "${!TAGS[@]}" | xargs -r docker image inspect --format '{{.Id}}|{{.Size}}' 2>/dev/null)
+  fi
