@@ -260,3 +260,64 @@ main() {
   [ "$gated" -gt 0 ] && exit 3
   exit 0
 }
+
+# --------------------------------------------------------------------------
+#  Payload executed ON the server (Linux, bash 4+). Uploaded over SSH.
+# --------------------------------------------------------------------------
+emit_remote_script() {
+cat <<'__REMOTE_PAYLOAD__'
+#!/usr/bin/env bash
+# infra_audit remote payload. Read-only, except step 7 (docker pull; optional --apply).
+
+if [ "$(uname -s)" != "Linux" ]; then echo "This payload needs Linux." >&2; exit 2; fi
+
+# Re-run as root if passwordless sudo exists (needed for logs, docker root dir, auth logs)
+if [ "$(id -u)" -ne 0 ] && [ -z "${AUDIT_ELEVATED:-}" ]; then
+  if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+    exec sudo -n env AUDIT_ELEVATED=1 bash "$0" "$@"
+  fi
+fi
+
+OUT=""; APPLY=0
+MIN_FREE_GB=3      # step 7: refuse to pull if less free space than this (GB)
+BIG_LOG_MB=100     # flag logs bigger than this
+HOT_CONN=10        # flag >= this many connections to/from one IP:port
+BRUTE_FAILS=20     # flag >= this many failed-SSH log lines from one IP
+CMD_TIMEOUT=60     # per-command timeout (seconds)
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --out)   [ $# -ge 2 ] || { echo "--out needs a value" >&2; exit 2; }; OUT="$2"; shift 2 ;;
+    --apply) APPLY=1; shift ;;
+    *)       echo "unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$OUT" ] || { echo "--out is required" >&2; exit 2; }
+mkdir -p "$OUT" || { echo "cannot create $OUT" >&2; exit 2; }
+
+TS="$(date +%Y%m%d%H%M%S)"
+FLAGS="$OUT/.flags"; STATUS="$OUT/.status"; : > "$FLAGS"; : > "$STATUS"
+export OUT TS CMD_TIMEOUT
+
+# ------------------------------ helpers ------------------------------------
+have() { command -v "$1" >/dev/null 2>&1; }
+T()    { if have timeout; then timeout "$CMD_TIMEOUT" "$@"; else "$@"; fi; }
+flag() { printf '%s\n' "$1" >> "$FLAGS"; }                  # "CRIT|WARN|INFO|message"
+hdr()  { printf '\n==================== %s ====================\n' "$1"; }
+hs()   { awk -v b="${1:-0}" 'BEGIN{split("B KB MB GB TB",u," ");i=1;while(b>=1024&&i<5){b/=1024;i++}printf "%.1f%s",b,u[i]}'; }
+
+# L "label" "shell command"  -> runs it, always reports success / failure / timeout
+L() {
+  local label="$1" cmd="$2" rc
+  printf '\n--- %s\n$ %s\n' "$label" "$cmd"
+  if have timeout; then timeout "$CMD_TIMEOUT" bash -c "$cmd" 2>&1; rc=$?; else bash -c "$cmd" 2>&1; rc=$?; fi
+  if [ "$rc" -eq 124 ]; then echo "[TIMED OUT after ${CMD_TIMEOUT}s]"
+  elif [ "$rc" -ne 0 ]; then echo "[command exited with code $rc]"; fi
+  return 0
+}
+# LI tool "label" "cmd" -> same, but states clearly when the tool is missing
+LI() {
+  local tool="$1"; shift
+  if have "$tool"; then L "$@"; else printf '\n--- %s\n[SKIPPED: "%s" is not installed on this host]\n' "$1" "$tool"; fi
+  return 0
+}
