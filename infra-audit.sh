@@ -532,3 +532,61 @@ docker_report() {
     echo "(no containers)"
   fi
   [ -r /etc/docker/daemon.json ] && L "Docker daemon log settings" "grep -n -i 'log' /etc/docker/daemon.json || echo '(no log settings in daemon.json -> unlimited json-file logs by default)'"
+
+  hdr "DOCKER - VOLUMES NOT ATTACHED TO ANY CONTAINER"
+  local dv; dv="$(T docker volume ls -qf dangling=true 2>/dev/null)"
+  if [ -n "$dv" ]; then
+    echo "$dv" | sed 's/^/  /'
+    echo "ADVICE: CAUTION - volumes can hold DATA (databases, uploads). Inspect before deleting: docker volume inspect <name>"
+  else
+    echo "(none)"
+  fi
+  L "Build cache" "docker system df | grep -i 'build cache'; echo 'ADVICE: build cache is SAFE to clear: docker builder prune'"
+  return 0
+}
+
+k8s_report() {
+  hdr "KUBERNETES - NODES AND PODS"
+  L "nodes" "$KC get nodes -o wide"
+  L "node usage (needs metrics-server)" "$KC top nodes"
+  local pods="$OUT/.pods" top="$OUT/.top" uids="$OUT/.uids"
+  $KC get pods -A --no-headers -o custom-columns='NS:.metadata.namespace,NAME:.metadata.name,PHASE:.status.phase,OWNER:.metadata.ownerReferences[0].kind,RESTARTS:.status.containerStatuses[*].restartCount,UID:.metadata.uid,IMAGES:.spec.containers[*].image' > "$pods" 2>"$OUT/.pods_err"
+  if [ ! -s "$pods" ]; then echo "[could not list pods: $(tr '\n' ' ' < "$OUT/.pods_err" | cut -c1-200)]"; return 0; fi
+  awk '{print $6}' "$pods" > "$uids"
+  if ! $KC top pods -A --no-headers > "$top" 2>"$OUT/.top_err"; then
+    : > "$top"; echo "NOTE: 'kubectl top' failed (metrics-server missing?): $(tr '\n' ' ' < "$OUT/.top_err" | cut -c1-160)"
+    echo "      Pods are listed without CPU/MEM numbers."
+  fi
+  echo
+  echo "PODS - highest memory first (verdict = may this pod be deleted?)"
+  awk -v topf="$top" '
+    function mi(s,  n,u){ n=s+0; u=s; gsub(/[0-9.]/,"",u); if(u=="Ki")return n/1024; if(u=="Mi")return n; if(u=="Gi")return n*1024; if(u=="Ti")return n*1048576; return n/1048576 }
+    BEGIN{ while ((getline line < topf) > 0) { split(line,a," "); k=a[1] "/" a[2]; cpu[k]=a[3]; mem[k]=a[4] } }
+    { k=$1 "/" $2; m=(k in mem)? mi(mem[k]) : -1; c=(k in cpu)? cpu[k] : "n/a"
+      r=0; n=split($5,rs,","); for(i=1;i<=n;i++) r+=rs[i]
+      if ($3=="Succeeded") v="SAFE - completed pod"
+      else if ($3=="Failed") v="SAFE - failed/evicted pod (read its logs first)"
+      else if ($3=="Running" || $3=="Pending") {
+        if ($4=="<none>") v="IN USE - bare pod, NO controller: deleting it loses it for good -> NOT SAFE"
+        else if ($4=="StatefulSet") v="IN USE - StatefulSet (stateful) -> NOT SAFE; scale/rollout instead"
+        else if ($4=="Job") v="RUNNING job -> NOT SAFE until it finishes"
+        else v="IN USE - managed by " $4 ": deleting only restarts it (brief disruption); to free resources scale/remove the owner"
+      } else v="UNKNOWN phase - check kubectl describe"
+      printf "%.0f|%s|%s|%s|%s|%s|%d|%s|%s\n", m, k, c, (m>=0? sprintf("%.0fMi",m):"n/a"), $3, $4, r, v, $7 }' "$pods" \
+    | sort -t'|' -k1,1nr | head -40 \
+    | awk -F'|' '{printf "%-50s cpu=%-8s mem=%-8s phase=%-9s owner=%-12s restarts=%s\n      => %s\n      images: %s\n", $2,$3,$4,$5,$6,$7,$8,$9}'
+
+  hdr "KUBERNETES - POD LOGS ON THIS NODE (/var/log/pods, largest first)"
+  if [ -d /var/log/pods ]; then
+    du -sk /var/log/pods/*/ 2>/dev/null | sort -nr | head -20 | while read -r kb dir; do
+      local base uid v
+      base="$(basename "$dir")"; uid="${base##*_}"
+      if grep -qx "$uid" "$uids"; then v="IN USE - pod still exists (rotation is done by kubelet: containerLogMaxSize / containerLogMaxFiles)"
+      else v="SAFE - ORPHANED: the pod no longer exists in the cluster"; fi
+      printf '%9s  %s\n           => %s\n' "$(hs $((kb*1024)))" "$base" "$v"
+    done
+  else
+    echo "(no /var/log/pods on this host - not a kubelet node, or different log path)"
+  fi
+  return 0
+}
