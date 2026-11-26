@@ -602,3 +602,22 @@ cri_report() {
       done
   return 0
 }
+
+host_logs_report() {
+  hdr "HOST LOG FILES AND JOURNAL"
+  LI journalctl "journald disk usage" "journalctl --disk-usage"
+  echo; echo "Files over 20MB under /var/log (largest first):"
+  local f s found=0
+  while IFS='|' read -r s f; do
+    [ -n "$f" ] || continue; found=1
+    local v
+    case "$f" in
+      *.gz|*.xz|*.bz2|*.zst|*.old|*.[0-9]|*.[0-9][0-9]) v="SAFE - rotated/old copy (archive first if you need history)" ;;
+      *) if have fuser && fuser -s "$f" 2>/dev/null; then v="IN USE - open by a running process: do not rm; use logrotate or 'truncate -s 0'"
+         else v="CAUTION - active-looking log not currently open; check with 'lsof $f' before removing"; fi ;;
+    esac
+    printf '%9s  %s\n           => %s\n' "$(hs "$s")" "$f" "$v"
+  done < <(find /var/log -xdev -type f -size +20M -printf '%s|%p\n' 2>/dev/null | sort -t'|' -k1,1nr | head -20)
+  [ "$found" -eq 0 ] && echo "  (none)"
+  return 0
+}
