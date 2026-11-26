@@ -590,3 +590,15 @@ k8s_report() {
   fi
   return 0
 }
+
+cri_report() {
+  hdr "CONTAINER RUNTIME (crictl) - IMAGES BY SIZE"
+  local psout="$OUT/.cri_ps"; $CRI ps -a > "$psout" 2>&1
+  $CRI images 2>/dev/null | awk 'NR>1{s=$4; n=s+0; if (s ~ /GB$/) n*=1024; else if (s ~ /[kK]B$/) n/=1024; else if (s ~ /MB$/) n=n; else n/=1048576; printf "%d|%s:%s|%s|%s\n", n, $1, $2, $3, $4}' \
+    | sort -t'|' -k1,1nr | head -25 | while IFS='|' read -r _ name id sz; do
+        if grep -qF "${id:0:12}" "$psout" || grep -qF "$name" "$psout"; then v="in use per 'crictl ps -a'"
+        else v="no container references it (verify; 'crictl rmi --prune' removes only unused images)"; fi
+        printf '%10s  %-60s %s\n           => %s\n' "$sz" "$name" "${id:0:12}" "$v"
+      done
+  return 0
+}
