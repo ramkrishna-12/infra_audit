@@ -621,3 +621,22 @@ host_logs_report() {
   [ "$found" -eq 0 ] && echo "  (none)"
   return 0
 }
+
+sec_containers() {
+  hdr "SCOPE & SAFETY"
+  cat <<'EOF'
+This script NEVER deletes anything. "SAFE to delete" is advice only.
+Legend:  IN USE = referenced by a running container/pod -> do not delete
+         CAUTION = referenced by a stopped container / controller-managed pod -> decide consciously
+         SAFE    = referenced by nothing (dangling image, orphaned log, completed pod)
+EOF
+  echo
+  echo "Docker      : $( [ "$DOCKER_OK" = 1 ] && echo available || echo "NOT available - $DOCKER_NOTE" )"
+  echo "Kubernetes  : $( [ -n "$KC" ] && echo "available ($KNOTE)" || echo "NOT available - $KNOTE" )"
+  echo "crictl      : $( [ -n "$CRI" ] && echo "available ($CRI)" || echo "not available" )"
+  [ "$DOCKER_OK" = 1 ] && docker_report
+  [ -n "$KC" ] && k8s_report
+  [ -n "$CRI" ] && cri_report
+  host_logs_report
+  return 0
+}
