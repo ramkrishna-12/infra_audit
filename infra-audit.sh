@@ -640,3 +640,26 @@ EOF
   host_logs_report
   return 0
 }
+
+# ===================== SECTION 4: ports & licences =========================
+license_of() {   # $1 = image id ; prints "<license>|<label key>"  or "|"
+  local k v
+  for k in org.opencontainers.image.licenses org.label-schema.license org.opencontainers.image.license license licenses; do
+    v="$(docker image inspect --format "{{index .Config.Labels \"$k\"}}" "$1" 2>/dev/null)"
+    if [ -n "$v" ] && [ "$v" != "<no value>" ]; then printf '%s|%s' "$v" "$k"; return 0; fi
+  done
+  printf '|'
+}
+registry_kind() {  # $1 = image ref
+  local host="${1%%/*}"
+  case "$1" in */*) : ;; *) echo "Docker Hub (public)"; return ;; esac
+  case "$host" in
+    *.*|*:*) : ;;
+    *) echo "Docker Hub (public)"; return ;;
+  esac
+  case "$host" in
+    docker.io|index.docker.io|registry-1.docker.io) echo "Docker Hub (public)" ;;
+    ghcr.io|quay.io|public.ecr.aws|gcr.io|registry.k8s.io|k8s.gcr.io|mcr.microsoft.com) echo "public registry ($host)" ;;
+    *) echo "PRIVATE registry ($host)" ;;
+  esac
+}
