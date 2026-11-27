@@ -753,3 +753,24 @@ sec_network() {
   L "DNS resolvers" "grep -v '^#' /etc/resolv.conf"
   LI ss "socket summary" "ss -s"
   LI iptables "iptables OUTPUT rules (egress filtering)" "iptables -S OUTPUT"
+   if ! have ss; then
+    echo; echo "[SKIPPED: 'ss' not installed -> cannot analyse live connections]"
+    flag "WARN|'ss' is not installed: connection analysis skipped."
+    return 0
+  fi
+  ss -tlnp 2>/dev/null | awk '$1=="LISTEN"{n=split($4,a,":"); print a[n]}' | sort -u > "$OUT/.listen_ports"
+  ip -o addr 2>/dev/null | awk '{split($4,a,"/"); print a[1]}' | sort -u > "$OUT/.local_ips"
+
+  ss -tnp 2>/dev/null | awk -v lf="$OUT/.listen_ports" '
+    function port(ep){ sub(/.*:/,"",ep); return ep }
+    function ipof(ep){ sub(/:[0-9*]+$/,"",ep); gsub(/\[/,"",ep); gsub(/\]/,"",ep); sub(/^::ffff:/,"",ep); return ep }
+    function priv(a){ if (a ~ /^10\./ || a ~ /^127\./ || a ~ /^192\.168\./ || a ~ /^169\.254\./ || a ~ /^172\.(1[6-9]|2[0-9]|3[01])\./ || a ~ /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./) return 1
+                      if (a=="::1" || a ~ /^fe80/ || a ~ /^[fF][cCdD]/) return 1; return 0 }
+    BEGIN{ while ((getline p < lf) > 0) L[p]=1 }
+    $1=="ESTAB" {
+      lp=port($4); pi=ipof($5); pp=port($5)
+      proc="?"; if (match($6,/\(\("[^"]*"/)) proc=substr($6,RSTART+3,RLENGTH-4)
+      dir=(lp in L) ? "IN" : "OUT"; scope=priv(pi) ? "PRIVATE" : "PUBLIC"
+      if (pi ~ /^127\./ || pi=="::1") { dir="LOCAL"; scope="LOOPBACK" }
+      printf "%s\t%s\t%s\t%s\t%s:%s\t%s\n", dir, scope, proc, $4, pi, pp, pi
+    }' > "$OUT/.conns.tsv"
