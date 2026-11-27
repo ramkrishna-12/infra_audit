@@ -743,3 +743,13 @@ sec_ports() {
   fi
   return 0
 }
+
+
+# ======================= SECTION 5: network / outbound =====================
+sec_network() {
+  hdr "INTERFACES, ROUTES, DNS"
+  LI ip "addresses" "ip -br addr"
+  LI ip "routes" "ip route"
+  L "DNS resolvers" "grep -v '^#' /etc/resolv.conf"
+  LI ss "socket summary" "ss -s"
+  LI iptables "iptables OUTPUT rules (egress filtering)" "iptables -S OUTPUT"
