@@ -663,3 +663,83 @@ registry_kind() {  # $1 = image ref
     *) echo "PRIVATE registry ($host)" ;;
   esac
 }
+
+sec_ports() {
+  hdr "HOST LISTENING SOCKETS (what is reachable on this machine)"
+  if have ss; then L "TCP/UDP listeners with owning process" "ss -tulnp"
+  else LI netstat "listeners" "netstat -tulnp"; fi
+
+  if [ "$DOCKER_OK" = 1 ]; then
+    hdr "DOCKER - PORT BINDINGS PER CONTAINER (actual bindings)"
+    local iid cname state ports nm
+    local pub=0
+    T docker ps -aq --no-trunc 2>/dev/null | xargs -r docker inspect --format '{{.Image}}|{{.Name}}|{{.State.Status}}|{{.HostConfig.NetworkMode}}|{{range $p,$b := .NetworkSettings.Ports}}{{if $b}}{{range $b}}{{.HostIp}}:{{.HostPort}}->{{$p}} {{end}}{{else}}{{$p}}(not published) {{end}}{{end}}' 2>/dev/null > "$OUT/.cports"
+    if [ -s "$OUT/.cports" ]; then
+      while IFS='|' read -r iid cname state nm ports; do
+        cname="${cname#/}"
+        printf '%-28s state=%-9s net=%-10s ports: %s\n' "$cname" "$state" "$nm" "${ports:-none}"
+        [ "$nm" = "host" ] && echo "      (host network: it listens directly on the host; see listeners above)"
+        case "$ports" in
+          *"0.0.0.0:"*|*":::"*|*"[::]:"*|*" :"[0-9]*) echo "      !! bound to ALL interfaces - reachable from outside if the security group / firewall allows it"; pub=$((pub+1)) ;;
+        esac
+      done < "$OUT/.cports"
+      [ "$pub" -gt 0 ] && flag "INFO|$pub container(s) publish ports on all interfaces (0.0.0.0) - confirm the security group restricts them."
+    else
+      echo "(no containers)"
+    fi
+
+    hdr "DOCKER - IMAGES: exposed ports and LICENCE"
+    echo "Licence data comes from image labels. If an image declares none, it is reported as NOT DECLARED - never guessed."
+    local ids ref tags lic src exp vend source
+    ids="$(T docker image ls --no-trunc --format '{{.ID}}' 2>/dev/null | sort -u)"
+    if [ -z "$ids" ]; then echo "(no images)"; fi
+    for iid in $ids; do
+      tags="$(docker image ls --no-trunc --format '{{.ID}}|{{.Repository}}:{{.Tag}}' 2>/dev/null | awk -F'|' -v i="$iid" '$1==i && $2 !~ /<none>/ {printf "%s ", $2}')"
+      [ -n "$tags" ] || tags="<dangling>"
+      exp="$(docker image inspect --format '{{range $p,$_ := .Config.ExposedPorts}}{{$p}} {{end}}' "$iid" 2>/dev/null)"
+      IFS='|' read -r lic src <<< "$(license_of "$iid")"
+      vend="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.vendor"}}' "$iid" 2>/dev/null)"
+      source="$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.source"}}' "$iid" 2>/dev/null)"
+      echo
+      echo "IMAGE  : $tags (${iid:7:12})" | cut -c1-200
+      echo "  Exposed ports (from image): ${exp:-none declared}"
+      if [ -n "$lic" ]; then echo "  Licence: $lic   [label: $src]"
+      else
+        echo "  Licence: NOT DECLARED in image labels -> check the vendor/source page (vendor='${vend:-?}', source='${source:-?}')"
+      fi
+      for ref in $tags; do
+        [ "$ref" = "<dangling>" ] && continue
+        echo "  Registry: $ref -> $(registry_kind "$ref")"
+        case "$(registry_kind "$ref")" in PRIVATE*) echo "  !! private registry: licence is internal/commercial - confirm terms with the image owner" ;; esac
+        case "$ref" in *enterprise*|*-ee*|*:ee*|*commercial*|*licensed*|*-pro*) echo "  !! name suggests a commercial/enterprise edition - verify subscription or licence key is valid" ;; esac
+      done
+    done
+    hdr "DOCKER - LICENCE-LIKE ENVIRONMENT VARIABLES (names only, values hidden)"
+    local any=0
+    while IFS='|' read -r cname vars; do
+      [ -n "$vars" ] || continue; any=1; echo "  ${cname#/}: $vars"
+    done < <(T docker ps -aq --no-trunc 2>/dev/null | xargs -r docker inspect --format '{{.Name}}|{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | awk -F'|' '
+        NF>=2 && $1 != "" { cur=$1; line=$2 } NF==1 { line=$1; }
+        { n=split(line,kv,"="); name=kv[1]; if (toupper(name) ~ /LICEN[SC]E/) { if (cur in v) v[cur]=v[cur] " " name; else { v[cur]=name; ord[++c]=cur } } }
+        END{ for(i=1;i<=c;i++) print ord[i] "|" v[ord[i]] }')
+    [ "$any" -eq 0 ] && echo "  (none found)"
+  else
+    hdr "DOCKER"; echo "Not available - $DOCKER_NOTE"
+  fi
+
+  if [ -n "$KC" ]; then
+    hdr "KUBERNETES - CONTAINER PORTS PER POD"
+    L "pods: containerPort / hostPort / images" "$KC get pods -A -o custom-columns=NS:.metadata.namespace,POD:.metadata.name,CONTAINER_PORTS:.spec.containers[*].ports[*].containerPort,HOST_PORTS:.spec.containers[*].ports[*].hostPort,IMAGES:.spec.containers[*].image"
+    hdr "KUBERNETES - SERVICES EXPOSED OUTSIDE THE CLUSTER"
+    L "all services" "$KC get svc -A -o wide"
+    local ext; ext="$($KC get svc -A --no-headers 2>/dev/null | awk '$3=="NodePort"||$3=="LoadBalancer"{n++} END{print n+0}')"
+    echo; echo "NodePort/LoadBalancer services: $ext"
+    [ "$ext" -gt 0 ] && flag "INFO|$ext Kubernetes service(s) are NodePort/LoadBalancer (reachable from outside the cluster) - see 03_ports_licenses.txt."
+    L "ingresses" "$KC get ingress -A"
+    echo
+    echo "LICENCE for Kubernetes images: labels are only readable here for images present in local Docker."
+    echo "For others use:  skopeo inspect docker://<image> | grep -i licen   (or check the vendor page)."
+    L "unique images used by pods" "$KC get pods -A -o jsonpath='{range .items[*]}{range .spec.containers[*]}{.image}{\"\\n\"}{end}{end}' | sort -u"
+  fi
+  return 0
+}
