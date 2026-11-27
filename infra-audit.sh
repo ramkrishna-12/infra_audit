@@ -745,6 +745,7 @@ sec_ports() {
 }
 
 
+
 # ======================= SECTION 5: network / outbound =====================
 sec_network() {
   hdr "INTERFACES, ROUTES, DNS"
@@ -753,7 +754,8 @@ sec_network() {
   L "DNS resolvers" "grep -v '^#' /etc/resolv.conf"
   LI ss "socket summary" "ss -s"
   LI iptables "iptables OUTPUT rules (egress filtering)" "iptables -S OUTPUT"
-   if ! have ss; then
+
+  if ! have ss; then
     echo; echo "[SKIPPED: 'ss' not installed -> cannot analyse live connections]"
     flag "WARN|'ss' is not installed: connection analysis skipped."
     return 0
@@ -774,3 +776,19 @@ sec_network() {
       if (pi ~ /^127\./ || pi=="::1") { dir="LOCAL"; scope="LOOPBACK" }
       printf "%s\t%s\t%s\t%s\t%s:%s\t%s\n", dir, scope, proc, $4, pi, pp, pi
     }' > "$OUT/.conns.tsv"
+
+  hdr "OUTBOUND CALLS FROM THE HOST (established TCP; process -> remote)"
+  echo "Direction is decided by whether the local port is one this host LISTENS on (IN) or not (OUT)."
+  echo; echo "[PUBLIC internet destinations]  count  process -> remote ip:port"
+  awk -F'\t' '$1=="OUT"&&$2=="PUBLIC"{print $3 " -> " $5}' "$OUT/.conns.tsv" | sort | uniq -c | sort -nr | head -40 | sed 's/^/  /'
+  echo; echo "[PRIVATE / VPC / internal destinations]  count  process -> remote ip:port"
+  awk -F'\t' '$1=="OUT"&&$2=="PRIVATE"{print $3 " -> " $5}' "$OUT/.conns.tsv" | sort | uniq -c | sort -nr | head -40 | sed 's/^/  /'
+  local npub; npub="$(awk -F'\t' '$1=="OUT"&&$2=="PUBLIC"{print $6}' "$OUT/.conns.tsv" | sort -u | wc -l)"
+  echo; echo "Distinct PUBLIC IPs this host is talking to right now: $npub"
+  flag "INFO|Host currently has outbound connections to $npub distinct public IP(s) - see 04_network_outbound.txt."
+
+  echo; echo "[Reverse DNS of the busiest public destinations]"
+  awk -F'\t' '$1=="OUT"&&$2=="PUBLIC"{print $6}' "$OUT/.conns.tsv" | sort | uniq -c | sort -nr | head -15 | while read -r c ip; do
+    name=""; if have getent; then if have timeout; then name="$(timeout 3 getent hosts "$ip" 2>/dev/null | awk '{print $2; exit}')"; else name="$(getent hosts "$ip" 2>/dev/null | awk '{print $2; exit}')"; fi; fi
+    printf '  %5s  %-40s %s\n' "$c" "$ip" "${name:-no reverse DNS}"
+  done
