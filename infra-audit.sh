@@ -792,3 +792,40 @@ sec_network() {
     name=""; if have getent; then if have timeout; then name="$(timeout 3 getent hosts "$ip" 2>/dev/null | awk '{print $2; exit}')"; else name="$(getent hosts "$ip" 2>/dev/null | awk '{print $2; exit}')"; fi; fi
     printf '  %5s  %-40s %s\n' "$c" "$ip" "${name:-no reverse DNS}"
   done
+
+  echo; echo "[Inbound established connections - clients by IP]"
+  awk -F'\t' '$1=="IN"{print $6}' "$OUT/.conns.tsv" | sort | uniq -c | sort -nr | head -20 | sed 's/^/  /'
+
+  hdr "OUTBOUND CALLS INCLUDING CONTAINERS / NAT (connection tracking)"
+  echo "Container traffic is NATed, so it does not appear in 'ss' above. conntrack shows it."
+  local ct=""
+  if [ -r /proc/net/nf_conntrack ]; then ct="/proc/net/nf_conntrack"
+  elif have conntrack; then conntrack -L > "$OUT/.ct" 2>/dev/null && ct="$OUT/.ct"; fi
+  if [ -n "$ct" ]; then
+    awk -v lf="$OUT/.local_ips" '
+      function priv(a){ if (a ~ /^10\./ || a ~ /^127\./ || a ~ /^192\.168\./ || a ~ /^169\.254\./ || a ~ /^172\.(1[6-9]|2[0-9]|3[01])\./ || a ~ /^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\./) return 1
+                        if (a=="::1" || a ~ /^fe80/ || a ~ /^[fF][cCdD]/) return 1; return 0 }
+      BEGIN{ while ((getline x < lf) > 0) LOC[x]=1 }
+      { proto=""; dst=""; dport=""; un=0
+        for (i=1;i<=NF;i++) { f=$i
+          if (proto=="" && (f=="tcp"||f=="udp"||f=="icmp")) proto=f
+          else if (substr(f,1,4)=="dst=" && dst=="") dst=substr(f,5)
+          else if (substr(f,1,6)=="dport=" && dport=="") dport=substr(f,7)
+          else if (f=="[UNREPLIED]") un=1 }
+        if (proto=="" || dst=="") next
+        if (priv(dst) || (dst in LOC)) next
+        key=proto "/" dst ":" dport; n[key]++; if (un) u[key]++ }
+      END{ for (k in n) printf "%d\t%d\t%s\n", n[k], u[k]+0, k }' "$ct" | sort -t$'\t' -k1,1nr > "$OUT/.ct_out"
+    echo "  conns  unreplied  proto/destination:port"
+    head -30 "$OUT/.ct_out" | awk -F'\t' '{printf "  %5d  %9d  %s\n",$1,$2,$3}'
+    [ -s "$OUT/.ct_out" ] || echo "  (no tracked outbound public flows)"
+    local un; un="$(awk -F'\t' '{s+=$2} END{print s+0}' "$OUT/.ct_out")"
+    echo; echo "Tracked outbound flows that never received a reply (blocked egress or packet loss): $un"
+    [ "$un" -ge 5 ] && flag "WARN|$un outbound flows got no reply (UNREPLIED in conntrack): blocked egress or packet loss - see 04_network_outbound.txt."
+  else
+    echo "  [conntrack data unavailable: /proc/net/nf_conntrack missing and 'conntrack' not installed]"
+    echo "  Container-originated outbound traffic therefore cannot be listed from the host."
+  fi
+  L "connected UDP sockets (e.g. DNS, NTP)" "ss -unp | head -30"
+  return 0
+}
