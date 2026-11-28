@@ -829,3 +829,48 @@ sec_network() {
   L "connected UDP sockets (e.g. DNS, NTP)" "ss -unp | head -30"
   return 0
 }
+
+
+# ========================= SECTION 6: logins ===============================
+ssh_events() {
+  local files
+  files="$(ls -1tr /var/log/auth.log* 2>/dev/null)"
+  [ -n "$files" ] || files="$(ls -1tr /var/log/secure* 2>/dev/null)"
+  if [ -n "$files" ]; then
+    # shellcheck disable=SC2086
+    zcat -f $files 2>/dev/null
+  elif have journalctl; then
+    journalctl --no-pager -o short-iso --since "30 days ago" -t sshd -t sshd-session 2>/dev/null
+  fi
+}
+ssh_source() {
+  if ls /var/log/auth.log* >/dev/null 2>&1; then echo "/var/log/auth.log* (rotated files included)"
+  elif ls /var/log/secure* >/dev/null 2>&1; then echo "/var/log/secure* (rotated files included)"
+  elif have journalctl; then echo "journald (last 30 days, sshd units)"
+  else echo "NONE"; fi
+}
+
+sec_logins() {
+  hdr "CURRENTLY LOGGED IN"
+  LI who "active sessions" "who -u"
+  local nact nip
+  nact="$(who 2>/dev/null | wc -l)"
+  nip="$(who 2>/dev/null | sed -n 's/.*(\(.*\)).*/\1/p' | grep -E '^[0-9a-fA-F:.]+$' | sort -u | wc -l)"
+  echo; echo "Active sessions: $nact   |   distinct remote IPs among them: $nip"
+
+  hdr "LOGIN HISTORY FROM wtmp (last -i)"
+  if have last; then
+    last -i -F -n 5000 2>/dev/null | awk '$2 ~ /^(pts|tty)/ && $3 ~ /^[0-9a-fA-F:.]+$/ && $3 != "0.0.0.0" {
+        ip=$3; ts=$4 " " $5 " " $6 " " $7 " " $8; n[ip]++; if (!(ip in lastseen)) lastseen[ip]=ts; firstseen[ip]=ts }
+      END{ for (ip in n) printf "%d\t%s\t%s\t%s\n", n[ip], ip, firstseen[ip], lastseen[ip] }' | sort -t$'\t' -k1,1nr > "$OUT/.wtmp_ips"
+    if [ -s "$OUT/.wtmp_ips" ]; then
+      echo "Distinct remote IPs in wtmp: $(wc -l < "$OUT/.wtmp_ips")"
+      echo; echo "LOGINS  IP                      FIRST SEEN                  LAST SEEN"
+      awk -F'\t' '{printf "%6d  %-22s  %-26s  %s\n",$1,$2,$3,$4}' "$OUT/.wtmp_ips" | head -40
+    else
+      echo "(no remote logins recorded in wtmp)"
+    fi
+    L "last 40 raw wtmp entries" "last -i -F -n 40"
+  else
+    echo "[SKIPPED: 'last' not installed]"
+  fi
