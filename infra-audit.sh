@@ -943,3 +943,19 @@ sec_logins() {
   echo; echo "NOTE: logins through AWS SSM Session Manager or the serial console have no source IP and are not counted above."
   return 0
 }
+
+
+# ======================= SECTION 8: connection health ======================
+tcp_probe() {   # host port count
+  local h="$1" p="$2" n="$3" ok=0 fail=0 s e tot=0
+  have timeout || { echo "  $h:$p  [SKIPPED: 'timeout' not installed]"; return 0; }
+  for _ in $(seq 1 "$n"); do
+    s="$(date +%s%N)"
+    if timeout 3 bash -c "exec 3<>/dev/tcp/$h/$p" 2>/dev/null; then ok=$((ok+1)); e="$(date +%s%N)"; tot=$((tot + (e - s) / 1000000)); else fail=$((fail+1)); fi
+    sleep 0.2
+  done
+  printf '  %-28s ok=%d fail=%d avg_connect=%s\n' "$h:$p" "$ok" "$fail" "$([ "$ok" -gt 0 ] && echo "$((tot/ok))ms" || echo n/a)"
+  [ "$fail" -gt 0 ] && flag "WARN|TCP connect to $h:$p failed $fail/$n times (loss, filtering, or outage)."
+  return 0
+}
+tcp_counters() { awk '/^Tcp:/{ if (!h) { for(i=2;i<=NF;i++) name[i]=$i; h=1 } else { for(i=2;i<=NF;i++) v[name[i]]=$i } } END{ print v["OutSegs"]+0, v["RetransSegs"]+0, v["InErrs"]+0, v["AttemptFails"]+0, v["EstabResets"]+0 }' /proc/net/snmp; }
