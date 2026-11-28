@@ -959,3 +959,24 @@ tcp_probe() {   # host port count
   return 0
 }
 tcp_counters() { awk '/^Tcp:/{ if (!h) { for(i=2;i<=NF;i++) name[i]=$i; h=1 } else { for(i=2;i<=NF;i++) v[name[i]]=$i } } END{ print v["OutSegs"]+0, v["RetransSegs"]+0, v["InErrs"]+0, v["AttemptFails"]+0, v["EstabResets"]+0 }' /proc/net/snmp; }
+
+
+sec_health() {
+  hdr "PACKET LOSS / LATENCY (ICMP)"
+  local gw dns t out loss
+  gw="$(ip route 2>/dev/null | awk '/^default/{print $3; exit}')"
+  dns="$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf 2>/dev/null)"
+  if have ping; then
+    for t in "$gw" "$dns" 1.1.1.1 8.8.8.8; do
+      [ -n "$t" ] || continue
+      case "$t" in 127.*) echo "  $t (local stub resolver) skipped"; continue ;; esac
+      out="$(ping -c 15 -i 0.3 -W 2 -q "$t" 2>&1)"
+      loss="$(printf '%s\n' "$out" | sed -n 's/.* \([0-9.]*\)% packet loss.*/\1/p')"
+      echo "  $t  -> loss=${loss:-unknown}%   $(printf '%s\n' "$out" | grep -E 'rtt|round-trip' | sed 's/.*= //')"
+      if [ -z "$loss" ]; then echo "     [ping output not understood: $(printf '%s' "$out" | head -c 120)]"
+      elif awk -v l="$loss" 'BEGIN{exit !(l>=100)}'; then echo "     (100% loss: ICMP may simply be blocked - see the TCP probes below)"
+      elif awk -v l="$loss" 'BEGIN{exit !(l>0)}'; then flag "WARN|Packet loss ${loss}% to $t - see 07_connection_health.txt."; fi
+    done
+  else
+    echo "[SKIPPED: ping not installed]"
+  fi
