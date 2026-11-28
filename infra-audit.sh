@@ -1035,3 +1035,54 @@ sec_health() {
   else
     echo "[SKIPPED: ss not installed]"
   fi
+
+  hdr "REPEATED CONNECTIONS (>= $HOT_CONN to/from the same IP:port)"
+  if [ -s "$OUT/.conns.tsv" ]; then
+    echo "[OUTBOUND - same remote ip:port opened many times]"
+    awk -F'\t' '$1=="OUT"{print $5}' "$OUT/.conns.tsv" | sort | uniq -c | sort -nr | awk -v t="$HOT_CONN" '$1>=t{printf "  %5d x  %s\n",$1,$2}' | head -20 | tee "$OUT/.hot_out"
+    [ -s "$OUT/.hot_out" ] || echo "  (none)"
+    [ -s "$OUT/.hot_out" ] && flag "INFO|Repeated outbound connections to the same endpoint (>= $HOT_CONN) - see 07_connection_health.txt (could be a connection pool or a reconnect loop)."
+    echo; echo "[INBOUND - same client IP connected many times]"
+    awk -F'\t' '$1=="IN"{print $6}' "$OUT/.conns.tsv" | sort | uniq -c | sort -nr | awk -v t="$HOT_CONN" '$1>=t{printf "  %5d x  %s\n",$1,$2}' | head -20 | tee "$OUT/.hot_in"
+    [ -s "$OUT/.hot_in" ] || echo "  (none)"
+    [ -s "$OUT/.hot_in" ] && flag "WARN|One or more client IPs hold >= $HOT_CONN simultaneous connections to this host - see 07_connection_health.txt."
+  else
+    echo "(no connection data collected - 'ss' missing or no established connections)"
+  fi
+  echo; echo "Repeated SSH login attempts per IP are listed in 05_logins.txt."
+
+  hdr "CONNECTION TRACKING TABLE / KERNEL NETWORK ERRORS"
+  if [ -r /proc/sys/net/netfilter/nf_conntrack_count ] && [ -r /proc/sys/net/netfilter/nf_conntrack_max ]; then
+    local cc cm cp
+    cc="$(cat /proc/sys/net/netfilter/nf_conntrack_count)"; cm="$(cat /proc/sys/net/netfilter/nf_conntrack_max)"
+    cp=$(( cc * 100 / (cm > 0 ? cm : 1) ))
+    echo "conntrack entries: $cc / $cm (${cp}%)"
+    [ "$cp" -ge 80 ] && flag "CRIT|conntrack table is ${cp}% full: new connections will be DROPPED when it reaches 100%."
+  else
+    echo "conntrack counters not available."
+  fi
+  if have dmesg; then
+    echo; echo "Recent kernel network messages:"
+    local dm; dm="$(dmesg -T 2>&1 | grep -iE 'conntrack: table full|dropping packet|link is down|NIC Link|tx timeout|reset adapter|Out of memory|SYN flooding' | tail -20)"
+    if [ -n "$dm" ]; then echo "$dm" | sed 's/^/  /'; flag "WARN|Kernel log contains network-related warnings - see 07_connection_health.txt."
+    else echo "  (none; or dmesg is restricted for this user)"; fi
+  fi
+
+  hdr "RESTART LOOPS (repeated disconnect/reconnect of workloads)"
+  if [ "$DOCKER_OK" = 1 ]; then
+    echo "[Docker] container | restarts | status | exit code | OOM killed"
+    T docker ps -aq --no-trunc 2>/dev/null | xargs -r docker inspect --format '{{.Name}}|{{.RestartCount}}|{{.State.Status}}|{{.State.ExitCode}}|{{.State.OOMKilled}}' 2>/dev/null \
+      | awk -F'|' '{ n=$1; sub(/^\//,"",n); w=""; if ($2+0>=3) w="  <-- RESTARTING REPEATEDLY"; if ($5=="true") w=w "  <-- KILLED BY OOM"; printf "  %-30s restarts=%-4s %-10s exit=%-4s oom=%s%s\n", n,$2,$3,$4,$5,w }' | tee "$OUT/.restarts"
+    grep -q 'RESTARTING' "$OUT/.restarts" && flag "WARN|Docker container(s) restarting repeatedly (RestartCount >= 3) - see 07_connection_health.txt."
+    grep -q 'OOM' "$OUT/.restarts" && flag "CRIT|Docker container(s) were killed by the OOM killer - raise memory limit or fix the leak."
+  else
+    echo "[Docker not available]"
+  fi
+  if [ -n "$KC" ] && [ -s "$OUT/.pods" ]; then
+    echo; echo "[Kubernetes] pods with restarts >= 3 or not healthy:"
+    awk '{ r=0; n=split($5,a,","); for(i=1;i<=n;i++) r+=a[i]; if (r>=3 || ($3!="Running" && $3!="Succeeded")) printf "  %s/%s  phase=%s restarts=%d owner=%s\n",$1,$2,$3,r,$4 }' "$OUT/.pods" | head -30 | tee "$OUT/.krestarts"
+    [ -s "$OUT/.krestarts" ] || echo "  (none)"
+    [ -s "$OUT/.krestarts" ] && flag "WARN|Kubernetes pods with >=3 restarts or unhealthy phase - see 07_connection_health.txt."
+  fi
+  return 0
+}
