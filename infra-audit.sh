@@ -874,3 +874,72 @@ sec_logins() {
   else
     echo "[SKIPPED: 'last' not installed]"
   fi
+
+
+  hdr "SUCCESSFUL SSH LOGINS FROM AUTH LOGS"
+  local src; src="$(ssh_source)"
+  echo "Source: $src"
+  if [ "$src" = "NONE" ]; then
+    echo "[No auth log and no journalctl: cannot analyse SSH logins]"
+    flag "WARN|No SSH auth log source available: login history incomplete."
+  else
+    ssh_events | awk '
+      /Accepted / {
+        if ($1 ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/) { ts=$1; h=substr($1, index($1,"T")+1, 2) } else { ts=$1 " " $2 " " $3; split($3,t,":"); h=t[1] }
+        meth=""; user=""; ip=""
+        for (i=4;i<=NF;i++) {
+          if ($i=="Accepted" && meth=="") meth=$(i+1)
+          else if ($i=="for" && user=="") { user=$(i+1); if (user=="invalid" && $(i+2)=="user") user=$(i+3) }
+          else if ($i=="from" && ip=="") ip=$(i+1)
+        }
+        if (ip=="") next
+        n[ip]++; if (!(ip in first)) first[ip]=ts; last[ip]=ts
+        if (index(" " us[ip] " ", " " user " ")==0) us[ip]=us[ip] " " user
+        hr[h+0]++; tot++
+        print ts "\t" user "\t" ip "\t" meth > evf
+      }
+      END{
+        for (ip in n) printf "%d\t%s\t%s\t%s\t%s\n", n[ip], ip, first[ip], last[ip], us[ip] > sumf
+        for (i=0;i<24;i++) printf "%02d\t%d\n", i, hr[i]+0 > hrf
+        print tot+0 > totf
+      }' evf="$OUT/.login_events" sumf="$OUT/.login_sum" hrf="$OUT/.login_hr" totf="$OUT/.login_tot"
+    if [ -s "$OUT/.login_sum" ]; then
+      local ntot nuniq
+      ntot="$(cat "$OUT/.login_tot")"; nuniq="$(wc -l < "$OUT/.login_sum")"
+      echo "Successful logins in the available history: $ntot from $nuniq distinct IP(s)"
+      flag "INFO|SSH: $nuniq distinct IP(s) logged in successfully ($ntot logins) - see 05_logins.txt."
+      echo; echo "LOGINS  IP                      FIRST SEEN                  LAST SEEN                   USERS"
+      sort -t$'\t' -k1,1nr "$OUT/.login_sum" | awk -F'\t' '{printf "%6d  %-22s  %-26s  %-26s  %s\n",$1,$2,$3,$4,$5}' | head -50
+      echo; echo "Most recent 40 successful logins (time, user, ip, method):"
+      tail -40 "$OUT/.login_events" | awk -F'\t' '{printf "  %-26s %-14s %-22s %s\n",$1,$2,$3,$4}'
+      echo; echo "Logins by hour of day (server local time):"
+      awk -F'\t' '{ bar=""; for(i=0;i<$2 && i<60;i++) bar=bar "#"; printf "  %s:00  %5d  %s\n",$1,$2,bar }' "$OUT/.login_hr"
+    else
+      echo "No 'Accepted' SSH logins found in this source (could be: no logins, log rotated away, logs unreadable without root, or logins via SSM/console)."
+    fi
+
+    hdr "FAILED / SUSPICIOUS SSH ATTEMPTS (log lines per source IP)"
+    ssh_events | awk '
+      /Failed password|Invalid user|authentication failure|Connection closed by (invalid|authenticating) user|Disconnected from (invalid|authenticating) user|maximum authentication attempts|Unable to negotiate|kex_exchange_identification|Did not receive identification/ {
+        ip="(none)"
+        for (i=4;i<=NF;i++) { f=$i; if (substr(f,1,6)=="rhost=") f=substr(f,7)
+          if (f ~ /^[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$/) { ip=f; break } }
+        n[ip]++ }
+      END{ for (ip in n) printf "%d\t%s\n", n[ip], ip }' | sort -t$'\t' -k1,1nr > "$OUT/.fail_ips"
+    if [ -s "$OUT/.fail_ips" ]; then
+      echo "LINES  SOURCE IP"
+      head -20 "$OUT/.fail_ips" | awk -F'\t' '{printf "%6d  %s\n",$1,$2}'
+      local c ip nb=0
+      while IFS=$'\t' read -r c ip; do
+        [ "$ip" = "(none)" ] && continue
+        if [ "$c" -ge "$BRUTE_FAILS" ]; then nb=$((nb+1)); fi
+      done < "$OUT/.fail_ips"
+      [ "$nb" -gt 0 ] && flag "WARN|SSH: $nb IP(s) have >= $BRUTE_FAILS failed-login log lines (possible brute force) - see 05_logins.txt."
+    else
+      echo "(none found)"
+    fi
+  fi
+  LI lastb "last failed logins (lastb)" "lastb -i -n 20"
+  echo; echo "NOTE: logins through AWS SSM Session Manager or the serial console have no source IP and are not counted above."
+  return 0
+}
