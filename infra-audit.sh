@@ -980,3 +980,58 @@ sec_health() {
   else
     echo "[SKIPPED: ping not installed]"
   fi
+
+  hdr "TCP CONNECT TESTS AND DNS (real reachability)"
+  tcp_probe 1.1.1.1 443 10
+  tcp_probe 8.8.8.8 443 10
+  tcp_probe registry-1.docker.io 443 5
+  local ok=0
+  for _ in 1 2 3 4 5; do getent hosts registry-1.docker.io >/dev/null 2>&1 && ok=$((ok+1)); done
+  echo "  DNS lookups of registry-1.docker.io: $ok/5 succeeded"
+  [ "$ok" -lt 5 ] && flag "WARN|DNS resolution failed $((5-ok))/5 times."
+
+  hdr "INTERFACE ERRORS / DROPS (since boot)"
+  awk '{ sub(":"," ") } NR>2 && $1 != "lo" { rp=$3; re=$4; rd=$5; tp=$11; te=$12; td=$13
+         flagit=(re+te>0 || (rp>1000 && rd*1000>rp)) ? "  <-- CHECK" : ""
+         printf "  %-16s rx_pkts=%s rx_err=%s rx_drop=%s | tx_pkts=%s tx_err=%s tx_drop=%s%s\n", $1,rp,re,rd,tp,te,td,flagit }' /proc/net/dev
+  local bad; bad="$(awk '{ sub(":"," ") } NR>2 && $1!="lo" && $1 !~ /^(veth|docker|br-|cali|flannel|cni|lxc)/ { if ($4+$12>0 || ($3>1000 && $5*1000>$3)) n++ } END{print n+0}' /proc/net/dev)"
+  [ "$bad" -gt 0 ] && flag "WARN|$bad physical/primary interface(s) show errors or >0.1% drops - see 07_connection_health.txt."
+
+  hdr "TCP RETRANSMISSIONS"
+  local o1 r1 e1 a1 s1 o2 r2 a2 s2 pct dpct
+  read -r o1 r1 e1 a1 s1 <<< "$(tcp_counters)"
+  echo "Since boot : segments_out=$o1 retransmitted=$r1 in_errors=$e1 failed_connect_attempts=$a1 established_resets=$s1"
+  if [ "$o1" -gt 0 ]; then
+    pct="$(awk -v r="$r1" -v o="$o1" 'BEGIN{printf "%.2f", r*100/o}')"
+    echo "Retransmit ratio since boot: ${pct}%"
+    awk -v p="$pct" 'BEGIN{exit !(p>3)}' && flag "WARN|TCP retransmit ratio since boot is ${pct}% (>3% suggests loss/congestion)."
+  fi
+  echo "Sampling 10 seconds of live traffic ..."
+  sleep 10
+  read -r o2 r2 _ a2 s2 <<< "$(tcp_counters)"
+  echo "Last 10s   : segments_out=$((o2-o1)) retransmitted=$((r2-r1)) failed_connect_attempts=$((a2-a1)) resets=$((s2-s1))"
+  if [ $((o2-o1)) -gt 50 ]; then
+    dpct="$(awk -v r=$((r2-r1)) -v o=$((o2-o1)) 'BEGIN{printf "%.2f", r*100/o}')"
+    echo "Live retransmit ratio: ${dpct}%"
+    awk -v p="$dpct" 'BEGIN{exit !(p>5)}' && flag "CRIT|Live TCP retransmit ratio ${dpct}% over the last 10s: active packet loss."
+  else
+    echo "(too little traffic in the sample window to judge a live ratio)"
+  fi
+  [ $((a2-a1)) -gt 5 ] && flag "WARN|$((a2-a1)) failed outbound TCP connection attempts in 10s."
+
+  hdr "SOCKET STATES (stuck / repeated connections)"
+  if have ss; then
+    ss -tan 2>/dev/null | awk 'NR>1{c[$1]++} END{for(s in c) printf "  %-12s %d\n", s, c[s]}' | sort
+    local synsent closewait timewait synrecv
+    synsent="$(ss -tan 2>/dev/null | awk '$1=="SYN-SENT"{n++} END{print n+0}')"
+    closewait="$(ss -tan 2>/dev/null | awk '$1=="CLOSE-WAIT"{n++} END{print n+0}')"
+    timewait="$(ss -tan 2>/dev/null | awk '$1=="TIME-WAIT"{n++} END{print n+0}')"
+    synrecv="$(ss -tan 2>/dev/null | awk '$1=="SYN-RECV"{n++} END{print n+0}')"
+    [ "$synsent" -gt 5 ]    && flag "WARN|$synsent connections stuck in SYN-SENT: outbound connect attempts are not being answered."
+    [ "$closewait" -gt 50 ] && flag "WARN|$closewait connections in CLOSE-WAIT: an application is not closing sockets (leak)."
+    [ "$timewait" -gt 20000 ] && flag "WARN|$timewait sockets in TIME-WAIT (very high connection churn)."
+    [ "$synrecv" -gt 50 ]   && flag "WARN|$synrecv connections in SYN-RECV: possible SYN flood or overloaded listener."
+    echo; echo "Thresholds used: SYN-SENT>5, CLOSE-WAIT>50, TIME-WAIT>20000, SYN-RECV>50"
+  else
+    echo "[SKIPPED: ss not installed]"
+  fi
