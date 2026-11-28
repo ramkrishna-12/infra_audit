@@ -960,7 +960,6 @@ tcp_probe() {   # host port count
 }
 tcp_counters() { awk '/^Tcp:/{ if (!h) { for(i=2;i<=NF;i++) name[i]=$i; h=1 } else { for(i=2;i<=NF;i++) v[name[i]]=$i } } END{ print v["OutSegs"]+0, v["RetransSegs"]+0, v["InErrs"]+0, v["AttemptFails"]+0, v["EstabResets"]+0 }' /proc/net/snmp; }
 
-
 sec_health() {
   hdr "PACKET LOSS / LATENCY (ICMP)"
   local gw dns t out loss
